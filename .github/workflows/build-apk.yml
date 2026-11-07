@@ -34,6 +34,23 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
+      - name: Generate Gradle Wrapper
+        run: |
+          echo "Downloading Gradle 8.14.3..."
+          wget -q https://services.gradle.org/distributions/gradle-8.14.3-bin.zip
+          unzip -q gradle-8.14.3-bin.zip
+
+          echo "Generating Gradle Wrapper..."
+          cd android
+          ../gradle-8.14.3/bin/gradle wrapper \
+            --gradle-version 8.14.3 \
+            --distribution-type all
+
+          chmod +x gradlew
+
+          echo "Checking generated files..."
+          ls -la gradlew gradlew.bat gradle/wrapper/
+
       - name: Clean Gradle
         run: flutter clean   # <--- 加上这一行，强制每次重新构建
 
