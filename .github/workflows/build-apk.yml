@@ -1,11 +1,10 @@
-
 name: Build APK
 
 on:
   push:
-    branches: [main, master]
+    branches: [ main, master ]
   pull_request:
-    branches: [main, master]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -19,17 +18,8 @@ jobs:
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
-          distribution: zulu
+          distribution: 'zulu'
           java-version: '17'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK 36
-        run: |
-          sdkmanager "platforms;android-36"
-          sdkmanager "build-tools;36.0.0"
-          sdkmanager "platform-tools"
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -38,20 +28,14 @@ jobs:
           cache: true
 
       - name: Flutter version
-        run: |
-          flutter --version
-          flutter doctor -v
+        run: flutter --version
 
-      - name: Clean
-        run: flutter clean
-
-      - name: Get dependencies
+      # 每次运行都执行 pub get（不使用缓存跳过）
+      - name: Flutter pub get
         run: flutter pub get
 
-      - name: Check Android SDK
-        run: |
-          sdkmanager --list_installed
-          java -version
+      - name: Clean Gradle
+        run: flutter clean   # <--- 加上这一行，强制每次重新构建
 
       - name: Flutter analyze
         run: flutter analyze
@@ -60,7 +44,7 @@ jobs:
       - name: Build release APK
         run: flutter build apk --release
 
-      - name: Build split APK
+      - name: Build split per ABI APK
         run: flutter build apk --release --split-per-abi
 
       - name: Upload release APK
