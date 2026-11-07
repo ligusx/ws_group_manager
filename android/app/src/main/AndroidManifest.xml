@@ -1,13 +1,14 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 网络权限 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- 通知权限 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- 前台服务权限（保活必须） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
-    <!-- 声明网络权限，确保正式包能连接 WebSocket -->
-    <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- 允许弹出通知 -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-    <!-- 如果需要在后台保持运行（可选，部分机型需要） -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <!-- 声明存储权限，兼容安卓 9.0 及以下系统的文件导入导出 -->
+    <!-- 存储权限（兼容旧版） -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
@@ -31,16 +32,20 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
               />
-            <service
-              android:name="id.flutter.flutter_background_service.BackgroundService"
-              android:foregroundServiceType="dataSync"
-              tools:replace="android:foregroundServiceType" />
             
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- 注意：service 放在 activity 外面，和 activity 平级 -->
+        <service
+            android:name="id.flutter.flutter_background_service.BackgroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false"
+            tools:replace="android:foregroundServiceType">
+        </service>
         
         <meta-data
             android:name="flutterEmbedding"
