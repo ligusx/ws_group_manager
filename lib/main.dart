@@ -1,26 +1,98 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // 初始化通知服务
   await NotificationService.init();
+  await initBackgroundService(); // 初始化后台保活服务
   runApp(const MyApp());
+}
+
+/// ---------------- 后台保活服务 ----------------
+Future<void> initBackgroundService() async {
+  final service = FlutterBackgroundService();
+  
+  // 配置前台常驻通知（保活需要）
+  const AndroidNotificationChannel channel = AndroidNotificationChannel(
+    'background_service_channel',
+    '后台运行通知',
+    description: '保持 WebSocket 在后台运行',
+    importance: Importance.low, // 低优先级，不吵人
+  );
+  
+  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+      FlutterLocalNotificationsPlugin();
+  
+  await flutterLocalNotificationsPlugin
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(channel);
+
+  await service.configure(
+    androidConfiguration: AndroidConfiguration(
+      onStart: onServiceStart,
+      autoStart: true,
+      isForegroundMode: true,
+      notificationChannelId: 'background_service_channel',
+      initialNotificationTitle: 'WS 分组管理器',
+      initialNotificationContent: '正在后台监控网络...',
+      foregroundServiceNotificationId: 888,
+    ),
+    iosConfiguration: IosConfiguration(
+      autoStart: true,
+      onForeground: onServiceStart,
+      onBackground: onIosBackground,
+    ),
+  );
+}
+
+@pragma('vm:entry-point')
+bool onIosBackground(ServiceInstance service) {
+  WidgetsFlutterBinding.ensureInitialized();
+  return true;
+}
+
+@pragma('vm:entry-point')
+void onServiceStart(ServiceInstance service) async {
+  DartPluginRegistrant.ensureInitialized();
+
+  // 在后台隔离区里也需要用到通知
+  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+      FlutterLocalNotificationsPlugin();
+  const AndroidInitializationSettings initializationSettingsAndroid =
+      AndroidInitializationSettings('@mipmap/ic_launcher');
+  const InitializationSettings initializationSettings =
+      InitializationSettings(android: initializationSettingsAndroid);
+  await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+
+  if (service is AndroidServiceInstance) {
+    service.on('setAsForeground').listen((event) {
+      service.setAsForegroundService();
+    });
+    service.on('setAsBackground').listen((event) {
+      service.setAsBackgroundService();
+    });
+  }
+
+  service.on('stopService').listen((event) {
+    service.stopSelf();
+  });
 }
 
 /// ---------------- 通知服务单例 ----------------
 class NotificationService {
   static final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
-  
-  // 节流控制：记录上次弹通知的时间
+
   static DateTime _lastNotifyTime = DateTime.fromMillisecondsSinceEpoch(0);
 
   static Future<void> init() async {
@@ -28,23 +100,18 @@ class NotificationService {
         AndroidInitializationSettings('@mipmap/ic_launcher');
     const InitializationSettings initSettings =
         InitializationSettings(android: androidInit);
-    
+
     await _plugin.initialize(initSettings);
 
-    // 请求 Android 13+ 通知权限
     await _plugin
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
         ?.requestNotificationsPermission();
   }
 
-  /// 弹出通知（带节流，防止每秒弹一次卡死手机）
   static Future<void> show(String title, String body) async {
     final now = DateTime.now();
-    // 规则：距离上次弹通知不足 3 秒，则直接忽略（合并消息）
-    if (now.difference(_lastNotifyTime).inSeconds < 3) {
-      return;
-    }
+    if (now.difference(_lastNotifyTime).inSeconds < 3) return;
     _lastNotifyTime = now;
 
     const AndroidNotificationDetails androidDetails =
@@ -53,11 +120,10 @@ class NotificationService {
       'WS 消息通知',
       importance: Importance.max,
       priority: Priority.high,
-      // 使用 group 和 tag 可以覆盖旧通知，防止通知栏被刷屏
       groupKey: 'ws_group',
       tag: 'ws_msg',
     );
-    
+
     await _plugin.show(
       0,
       title,
@@ -67,7 +133,7 @@ class NotificationService {
   }
 }
 
-/// ---------------- 原有的数据模型 ----------------
+/// ---------------- 数据模型 ----------------
 class WsMessage {
   WsMessage({required this.text, required this.time, required this.incoming});
 
@@ -150,7 +216,7 @@ class WsConnection {
             time: DateTime.now(),
             incoming: true,
           ));
-          
+
           // 触发系统通知
           NotificationService.show('收到新消息 - $name', text);
         },
@@ -294,7 +360,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final List<WsConnection> _connections = [];
   bool _loading = true;
   int _seq = 0;
@@ -302,7 +368,29 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadFromStore();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    for (final c in _connections) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  // 监听应用生命周期：切到后台时，通知后台服务接管
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final service = FlutterBackgroundService();
+    if (state == AppLifecycleState.paused) {
+      // 切到后台，确保前台服务在运行
+      service.startService(); 
+    } else if (state == AppLifecycleState.resumed) {
+      // 切回前台
+    }
   }
 
   Future<void> _loadFromStore() async {
@@ -486,14 +574,6 @@ class _HomePageState extends State<HomePage> {
   }
 
   @override
-  void dispose() {
-    for (final c in _connections) {
-      c.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -598,7 +678,14 @@ class _ConnectionTile extends StatelessWidget {
           ],
         ),
         children: [
-          SizedBox(height: 260, child: _MessageList(conn: conn)),
+          // 使用 ConstrainedBox 实现自适应高度，最高 260，最低 80
+          ConstrainedBox(
+            constraints: const BoxConstraints(
+              maxHeight: 260,
+              minHeight: 80,
+            ),
+            child: _MessageList(conn: conn),
+          ),
           _SendBar(conn: conn),
         ],
       ),
@@ -606,7 +693,7 @@ class _ConnectionTile extends StatelessWidget {
   }
 }
 
-/// 修改：加入 ScrollController 自动滚动逻辑
+/// 修复自动滚动与渲染延迟的问题
 class _MessageList extends StatefulWidget {
   const _MessageList({required this.conn});
   final WsConnection conn;
@@ -617,93 +704,93 @@ class _MessageList extends StatefulWidget {
 
 class _MessageListState extends State<_MessageList> {
   final ScrollController _scrollController = ScrollController();
-  DateTime _lastScrollTime = DateTime.now();
 
   @override
   void initState() {
     super.initState();
-    widget.conn.messageCount.addListener(_scrollToBottom);
-    // 初始进入时滚动到底部
-    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToBottom());
+    widget.conn.messageCount.addListener(_onMessageAdded);
+    
+    // 首次进来时，跳到底部
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+      }
+    });
   }
 
   @override
   void dispose() {
-    widget.conn.messageCount.removeListener(_scrollToBottom);
+    widget.conn.messageCount.removeListener(_onMessageAdded);
     _scrollController.dispose();
     super.dispose();
   }
 
-  void _scrollToBottom() {
-    // 节流：如果 500 毫秒内已经滚动过，就忽略，防止高频消息导致 UI 卡顿
-    final now = DateTime.now();
-    if (now.difference(_lastScrollTime).inMilliseconds < 500) return;
-    _lastScrollTime = now;
-
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 150),
-        curve: Curves.easeOut,
-      );
-    }
-  }
-
-  void _jumpToBottom() {
-    if (_scrollController.hasClients) {
-      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-    }
+  void _onMessageAdded() {
+    // 必须等渲染完成后再滚动
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    // 这里去掉了 ValueListenableBuilder 的包裹，因为用 setState 驱动会更好控制滚动
-    // 实际上 ValueListenableBuilder 也行，只要带上 ScrollController 即可
-    final msgs = widget.conn.messages;
-    if (msgs.isEmpty) {
-      return const Center(
-          child: Text('暂无消息', style: TextStyle(color: Colors.grey)));
-    }
-    return ListView.builder(
-      controller: _scrollController,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      itemCount: msgs.length,
-      itemBuilder: (_, i) {
-        final m = msgs[i];
-        final time = '${m.time.hour.toString().padLeft(2, '0')}:'
-            '${m.time.minute.toString().padLeft(2, '0')}:'
-            '${m.time.second.toString().padLeft(2, '0')}';
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 2),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                m.incoming ? '↓' : '↑',
-                style: TextStyle(
-                  color: m.incoming ? Colors.green : Colors.blue,
-                  fontWeight: FontWeight.bold,
-                ),
+    return ValueListenableBuilder<int>(
+      valueListenable: widget.conn.messageCount,
+      builder: (context, count, child) {
+        final msgs = widget.conn.messages;
+        if (msgs.isEmpty) {
+          return const Center(
+              child: Text('暂无消息', style: TextStyle(color: Colors.grey)));
+        }
+
+        return ListView.builder(
+          controller: _scrollController,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          itemCount: msgs.length,
+          itemBuilder: (_, i) {
+            final m = msgs[i];
+            final time = '${m.time.hour.toString().padLeft(2, '0')}:'
+                '${m.time.minute.toString().padLeft(2, '0')}:'
+                '${m.time.second.toString().padLeft(2, '0')}';
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    m.incoming ? '↓' : '↑',
+                    style: TextStyle(
+                      color: m.incoming ? Colors.green : Colors.blue,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    time,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: SelectableText(
+                      m.text,
+                      style: const TextStyle(
+                          fontFamily: 'monospace', fontSize: 12),
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 4),
-              Text(
-                time,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: Colors.grey,
-                  fontFamily: 'monospace',
-                ),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: SelectableText(
-                  m.text,
-                  style:
-                      const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                ),
-              ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
