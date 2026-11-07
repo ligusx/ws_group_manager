@@ -1,4 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <!-- 声明网络权限，确保正式包能连接 WebSocket -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- 允许弹出通知 -->
