@@ -350,15 +350,15 @@ class _HomePageState extends State<HomePage> {
         fileName: 'ws_config.json',
         type: FileType.custom,
         allowedExtensions: ['json'],
-        bytes: utf8.encode(text),
       );
-      if (path != null && !Platform.isAndroid && !Platform.isIOS) {
-        // 桌面端 saveFile 会直接写文件
-      }
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('已导出配置${path != null ? '' : '（已取消）'}')),
-        );
+      if (path != null) {
+        final file = File(path);
+        await file.writeAsString(text);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('配置已导出')),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
