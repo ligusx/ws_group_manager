@@ -40,7 +40,19 @@ jobs:
       - name: Flutter analyze
         run: flutter analyze
         continue-on-error: true
+        
+      - name: Verify Android Gradle config
+        run: |
+          echo "===== gradle.properties ====="
+          cat android/gradle.properties
 
+          echo "===== settings.gradle.kts ====="
+          cat android/settings.gradle.kts
+
+          echo "===== Gradle version ====="
+          cd android
+          ./gradlew --version
+          
       - name: Build release APK
         run: flutter build apk --release
 
