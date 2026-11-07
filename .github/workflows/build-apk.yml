@@ -34,6 +34,9 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
+      - name: Clean Gradle
+        run: flutter clean   # <--- 加上这一行，强制每次重新构建
+
       - name: Flutter analyze
         run: flutter analyze
         continue-on-error: true
