@@ -336,37 +336,55 @@ class _HomePageState extends State<HomePage> {
   }
 
   // ---------- 导入 / 导出 ----------
-
+  
   Future<void> _exportConfig() async {
-    final data = {
-      'version': 1,
-      'connections': _connections.map((e) => e.toJson()).toList(),
-    };
-    final text = const JsonEncoder.withIndent('  ').convert(data);
+  final data = {
+    'version': 1,
+    'connections': _connections.map((e) => e.toJson()).toList(),
+  };
+  final text = const JsonEncoder.withIndent('  ').convert(data);
 
-    try {
-      final path = await FilePicker.platform.saveFile(
-        dialogTitle: '保存配置',
-        fileName: 'ws_config.json',
-        type: FileType.custom,
-        allowedExtensions: ['json'],
-      );
-      if (path != null) {
-        final file = File(path);
+  try {
+    // 1. 弹出系统保存文件对话框
+    final path = await FilePicker.platform.saveFile(
+      dialogTitle: '保存配置',
+      fileName: 'ws_config.json',
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+    );
+
+    if (path != null) {
+      // 2. 在安卓上，如果返回的路径没有写权限，可以先退回到临时目录
+      File file;
+      if (Platform.isAndroid) {
+        // 安卓 10+ 推荐直接写在公共下载目录，或者用临时目录
+        final directory = Directory.systemTemp;
+        file = File('${directory.path}/ws_config.json');
         await file.writeAsString(text);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('配置已导出')),
-          );
+        // 如果系统允许，再尝试写到你选择的路径
+        try {
+          await File(path).writeAsString(text);
+        } catch (_) {
+          // 写不进去就忽略，用临时文件
         }
+      } else {
+        file = File(path);
+        await file.writeAsString(text);
       }
-    } catch (e) {
+
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('导出失败：$e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('配置已导出')),
+        );
       }
     }
+  } catch (e) {
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('导出失败：$e')));
+    }
   }
+}
 
   Future<void> _importConfig() async {
     try {
