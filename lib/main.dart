@@ -6,23 +6,68 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
-void main() => runApp(const MyApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // 初始化通知服务
+  await NotificationService.init();
+  runApp(const MyApp());
+}
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+/// ---------------- 通知服务单例 ----------------
+class NotificationService {
+  static final FlutterLocalNotificationsPlugin _plugin =
+      FlutterLocalNotificationsPlugin();
+  
+  // 节流控制：记录上次弹通知的时间
+  static DateTime _lastNotifyTime = DateTime.fromMillisecondsSinceEpoch(0);
 
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'WS 分组管理器',
-      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
-      home: const HomePage(),
+  static Future<void> init() async {
+    const AndroidInitializationSettings androidInit =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+    const InitializationSettings initSettings =
+        InitializationSettings(android: androidInit);
+    
+    await _plugin.initialize(initSettings);
+
+    // 请求 Android 13+ 通知权限
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.requestNotificationsPermission();
+  }
+
+  /// 弹出通知（带节流，防止每秒弹一次卡死手机）
+  static Future<void> show(String title, String body) async {
+    final now = DateTime.now();
+    // 规则：距离上次弹通知不足 3 秒，则直接忽略（合并消息）
+    if (now.difference(_lastNotifyTime).inSeconds < 3) {
+      return;
+    }
+    _lastNotifyTime = now;
+
+    const AndroidNotificationDetails androidDetails =
+        AndroidNotificationDetails(
+      'ws_channel_id',
+      'WS 消息通知',
+      importance: Importance.max,
+      priority: Priority.high,
+      // 使用 group 和 tag 可以覆盖旧通知，防止通知栏被刷屏
+      groupKey: 'ws_group',
+      tag: 'ws_msg',
+    );
+    
+    await _plugin.show(
+      0,
+      title,
+      body.length > 50 ? '${body.substring(0, 50)}...' : body,
+      const NotificationDetails(android: androidDetails),
     );
   }
 }
 
-/// 单条消息
+/// ---------------- 原有的数据模型 ----------------
 class WsMessage {
   WsMessage({required this.text, required this.time, required this.incoming});
 
@@ -43,7 +88,6 @@ class WsMessage {
       );
 }
 
-/// 单个 WebSocket 连接模型
 class WsConnection {
   WsConnection({
     required this.id,
@@ -55,8 +99,6 @@ class WsConnection {
   final String id;
   String name;
   final String url;
-
-  /// 用户是否启用该连接（暂停后不自动重连）
   bool enabled;
 
   WebSocketChannel? _channel;
@@ -68,7 +110,6 @@ class WsConnection {
   final ValueNotifier<bool> connected = ValueNotifier(false);
   final ValueNotifier<int> messageCount = ValueNotifier(0);
 
-  /// 最近消息变化时通知 UI
   void _notifyMessages() {
     messageCount.value = messages.length;
   }
@@ -103,11 +144,15 @@ class WsConnection {
       connected.value = true;
       _sub = _channel!.stream.listen(
         (data) {
+          final text = data.toString();
           _addMessage(WsMessage(
-            text: data.toString(),
+            text: text,
             time: DateTime.now(),
             incoming: true,
           ));
+          
+          // 触发系统通知
+          NotificationService.show('收到新消息 - $name', text);
         },
         onDone: _onDisconnected,
         onError: (_) => _onDisconnected(),
@@ -174,7 +219,7 @@ class WsConnection {
       );
 }
 
-/// 连接配置存储
+/// ---------------- 存储类 ----------------
 class ConnectionStore {
   static const _key = 'ws_connections';
 
@@ -199,7 +244,6 @@ class ConnectionStore {
   }
 }
 
-/// 消息持久化存储（每个连接一个 key）
 class MessageStore {
   static String _keyFor(String id) => 'ws_messages_$id';
 
@@ -229,6 +273,20 @@ class MessageStore {
   }
 }
 
+/// ---------------- 界面部分 ----------------
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'WS 分组管理器',
+      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
+      home: const HomePage(),
+    );
+  }
+}
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -249,7 +307,6 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _loadFromStore() async {
     final list = await ConnectionStore.load();
-    // 恢复每个连接的历史消息
     for (final conn in list) {
       final msgs = await MessageStore.load(conn.id);
       conn.messages.addAll(msgs);
@@ -260,7 +317,6 @@ class _HomePageState extends State<HomePage> {
       _connections.addAll(list);
       _loading = false;
     });
-    // 仅连接启用状态的连接
     for (final conn in list) {
       if (conn.enabled) conn.connect();
     }
@@ -335,56 +391,48 @@ class _HomePageState extends State<HomePage> {
     await MessageStore.clear(conn.id);
   }
 
-  // ---------- 导入 / 导出 ----------
-  
   Future<void> _exportConfig() async {
-  final data = {
-    'version': 1,
-    'connections': _connections.map((e) => e.toJson()).toList(),
-  };
-  final text = const JsonEncoder.withIndent('  ').convert(data);
+    final data = {
+      'version': 1,
+      'connections': _connections.map((e) => e.toJson()).toList(),
+    };
+    final text = const JsonEncoder.withIndent('  ').convert(data);
 
-  try {
-    // 1. 弹出系统保存文件对话框
-    final path = await FilePicker.platform.saveFile(
-      dialogTitle: '保存配置',
-      fileName: 'ws_config.json',
-      type: FileType.custom,
-      allowedExtensions: ['json'],
-    );
+    try {
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: '保存配置',
+        fileName: 'ws_config.json',
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
 
-    if (path != null) {
-      // 2. 在安卓上，如果返回的路径没有写权限，可以先退回到临时目录
-      File file;
-      if (Platform.isAndroid) {
-        // 安卓 10+ 推荐直接写在公共下载目录，或者用临时目录
-        final directory = Directory.systemTemp;
-        file = File('${directory.path}/ws_config.json');
-        await file.writeAsString(text);
-        // 如果系统允许，再尝试写到你选择的路径
-        try {
-          await File(path).writeAsString(text);
-        } catch (_) {
-          // 写不进去就忽略，用临时文件
+      if (path != null) {
+        File file;
+        if (Platform.isAndroid) {
+          final directory = Directory.systemTemp;
+          file = File('${directory.path}/ws_config.json');
+          await file.writeAsString(text);
+          try {
+            await File(path).writeAsString(text);
+          } catch (_) {}
+        } else {
+          file = File(path);
+          await file.writeAsString(text);
         }
-      } else {
-        file = File(path);
-        await file.writeAsString(text);
-      }
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('配置已导出')),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('配置已导出')),
+          );
+        }
       }
-    }
-  } catch (e) {
-    if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('导出失败：$e')));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('导出失败：$e')));
+      }
     }
   }
-}
 
   Future<void> _importConfig() async {
     try {
@@ -402,7 +450,6 @@ class _HomePageState extends State<HomePage> {
           .map((e) => WsConnection.fromJson(e as Map<String, dynamic>))
           .toList();
 
-      // 关闭并移除现有连接
       for (final c in _connections) {
         c.dispose();
       }
@@ -417,7 +464,6 @@ class _HomePageState extends State<HomePage> {
         }
       });
 
-      // 恢复消息并连接
       for (final conn in list) {
         final msgs = await MessageStore.load(conn.id);
         conn.messages.addAll(msgs);
@@ -491,7 +537,6 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-/// 每个连接一个可展开的分组
 class _ConnectionTile extends StatelessWidget {
   const _ConnectionTile({
     required this.conn,
@@ -533,7 +578,6 @@ class _ConnectionTile extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            // 启用/暂停开关
             Switch(
               value: conn.enabled,
               onChanged: onToggleEnabled,
@@ -562,61 +606,104 @@ class _ConnectionTile extends StatelessWidget {
   }
 }
 
-class _MessageList extends StatelessWidget {
+/// 修改：加入 ScrollController 自动滚动逻辑
+class _MessageList extends StatefulWidget {
   const _MessageList({required this.conn});
   final WsConnection conn;
 
   @override
+  State<_MessageList> createState() => _MessageListState();
+}
+
+class _MessageListState extends State<_MessageList> {
+  final ScrollController _scrollController = ScrollController();
+  DateTime _lastScrollTime = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    widget.conn.messageCount.addListener(_scrollToBottom);
+    // 初始进入时滚动到底部
+    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToBottom());
+  }
+
+  @override
+  void dispose() {
+    widget.conn.messageCount.removeListener(_scrollToBottom);
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _scrollToBottom() {
+    // 节流：如果 500 毫秒内已经滚动过，就忽略，防止高频消息导致 UI 卡顿
+    final now = DateTime.now();
+    if (now.difference(_lastScrollTime).inMilliseconds < 500) return;
+    _lastScrollTime = now;
+
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 150),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  void _jumpToBottom() {
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<int>(
-      valueListenable: conn.messageCount,
-      builder: (context, count, child) {
-        final msgs = conn.messages;
-        if (msgs.isEmpty) {
-          return const Center(
-              child: Text('暂无消息', style: TextStyle(color: Colors.grey)));
-        }
-        return ListView.builder(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          itemCount: msgs.length,
-          itemBuilder: (_, i) {
-            final m = msgs[i];
-            final time = '${m.time.hour.toString().padLeft(2, '0')}:'
-                '${m.time.minute.toString().padLeft(2, '0')}:'
-                '${m.time.second.toString().padLeft(2, '0')}';
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 2),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    m.incoming ? '↓' : '↑',
-                    style: TextStyle(
-                      color: m.incoming ? Colors.green : Colors.blue,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    time,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey,
-                      fontFamily: 'monospace',
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: SelectableText(
-                      m.text,
-                      style: const TextStyle(
-                          fontFamily: 'monospace', fontSize: 12),
-                    ),
-                  ),
-                ],
+    // 这里去掉了 ValueListenableBuilder 的包裹，因为用 setState 驱动会更好控制滚动
+    // 实际上 ValueListenableBuilder 也行，只要带上 ScrollController 即可
+    final msgs = widget.conn.messages;
+    if (msgs.isEmpty) {
+      return const Center(
+          child: Text('暂无消息', style: TextStyle(color: Colors.grey)));
+    }
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      itemCount: msgs.length,
+      itemBuilder: (_, i) {
+        final m = msgs[i];
+        final time = '${m.time.hour.toString().padLeft(2, '0')}:'
+            '${m.time.minute.toString().padLeft(2, '0')}:'
+            '${m.time.second.toString().padLeft(2, '0')}';
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                m.incoming ? '↓' : '↑',
+                style: TextStyle(
+                  color: m.incoming ? Colors.green : Colors.blue,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-            );
-          },
+              const SizedBox(width: 4),
+              Text(
+                time,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey,
+                  fontFamily: 'monospace',
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: SelectableText(
+                  m.text,
+                  style:
+                      const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
+              ),
+            ],
+          ),
         );
       },
     );
