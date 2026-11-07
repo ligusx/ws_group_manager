@@ -4,7 +4,6 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -553,7 +552,7 @@ class _MessageList extends StatelessWidget {
   Widget build(BuildContext context) {
     return ValueListenableBuilder<int>(
       valueListenable: conn.messageCount,
-      builder: (_, _, __) {
+      builder: (context, count, child) {
         final msgs = conn.messages;
         if (msgs.isEmpty) {
           return const Center(
