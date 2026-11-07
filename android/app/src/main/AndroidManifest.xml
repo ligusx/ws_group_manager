@@ -1,7 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- 声明网络权限，确保正式包能连接 WebSocket -->
     <uses-permission android:name="android.permission.INTERNET"/>
-
+    <!-- 允许弹出通知 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- 如果需要在后台保持运行（可选，部分机型需要） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <!-- 声明存储权限，兼容安卓 9.0 及以下系统的文件导入导出 -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
