@@ -33,7 +33,8 @@ dependencies:
   web_socket_channel: ^3.0.0
   shared_preferences: ^2.3.0
   file_picker: ^10.3.3
-
+  
+  flutter_local_notifications: ^17.0.0
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
@@ -66,11 +67,7 @@ flutter:
   #   - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see
-  # https://flutter.dev/to/resolution-aware-images
-  
-  # 外加的
-dependencies:
-  flutter_local_notifications: ^17.0.0
+  # https://flutter.dev/to/resolution-aware-image
   
   # For details regarding adding assets from package dependencies, see
   # https://flutter.dev/to/asset-from-package
