@@ -67,7 +67,11 @@ flutter:
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
-
+  
+  # 外加的
+dependencies:
+  flutter_local_notifications: ^17.0.0
+  
   # For details regarding adding assets from package dependencies, see
   # https://flutter.dev/to/asset-from-package
 
