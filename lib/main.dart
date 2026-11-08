@@ -17,6 +17,30 @@ void main() async {
   runApp(const MyApp());
 }
 
+/// ---------------- 工具函数：JSON 格式化提取 ----------------
+/// 自动识别闲鱼发来的 JSON，提取正文内容并换行
+String formatIncomingMessage(String raw) {
+  try {
+    // 尝试解析 JSON
+    final decoded = jsonDecode(raw);
+    if (decoded is Map<String, dynamic>) {
+      String title = decoded['title']?.toString() ?? '';
+      String content = decoded['content']?.toString() ?? '';
+      
+      // 如果包含 title 和 content，就格式化输出
+      if (title.isNotEmpty || content.isNotEmpty) {
+        if (title.isNotEmpty && content.isNotEmpty) {
+          return '$title\n\n$content';
+        }
+        return title.isNotEmpty ? title : content;
+      }
+    }
+  } catch (_) {
+    // 不是合法的 JSON，原样返回
+  }
+  return raw;
+}
+
 /// ---------------- 后台保活服务 ----------------
 Future<void> initBackgroundService() async {
   final service = FlutterBackgroundService();
@@ -65,7 +89,6 @@ bool onIosBackground(ServiceInstance service) {
 void onServiceStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
 
-  // 在后台隔离区里也需要用到通知
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
       FlutterLocalNotificationsPlugin();
   const AndroidInitializationSettings initializationSettingsAndroid =
@@ -122,11 +145,14 @@ class NotificationService {
       priority: Priority.high,
       groupKey: 'ws_group',
       tag: 'ws_msg',
+      // 启用大文本模式，多行也能看全
+      styleInformation: BigTextStyleInformation(''),
     );
 
     await _plugin.show(
       0,
       title,
+      // 通知栏显示一行，如果太长就用省略号，点开能看到完整的
       body.length > 50 ? '${body.substring(0, 50)}...' : body,
       const NotificationDetails(android: androidDetails),
     );
@@ -210,15 +236,18 @@ class WsConnection {
       connected.value = true;
       _sub = _channel!.stream.listen(
         (data) {
-          final text = data.toString();
+          final rawText = data.toString();
+          // 解析并美化文本
+          final formattedText = formatIncomingMessage(rawText);
+
           _addMessage(WsMessage(
-            text: text,
+            text: formattedText,
             time: DateTime.now(),
             incoming: true,
           ));
 
-          // 触发系统通知
-          NotificationService.show('收到新消息 - $name', text);
+          // 触发系统通知（用美化后的文本去弹窗）
+          NotificationService.show('收到新消息 - $name', formattedText);
         },
         onDone: _onDisconnected,
         onError: (_) => _onDisconnected(),
@@ -678,7 +707,6 @@ class _ConnectionTile extends StatelessWidget {
           ],
         ),
         children: [
-          // 使用 ConstrainedBox 实现自适应高度，最高 260，最低 80
           ConstrainedBox(
             constraints: const BoxConstraints(
               maxHeight: 260,
@@ -693,7 +721,6 @@ class _ConnectionTile extends StatelessWidget {
   }
 }
 
-/// 修复自动滚动与渲染延迟的问题
 class _MessageList extends StatefulWidget {
   const _MessageList({required this.conn});
   final WsConnection conn;
@@ -710,7 +737,6 @@ class _MessageListState extends State<_MessageList> {
     super.initState();
     widget.conn.messageCount.addListener(_onMessageAdded);
     
-    // 首次进来时，跳到底部
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
@@ -726,7 +752,6 @@ class _MessageListState extends State<_MessageList> {
   }
 
   void _onMessageAdded() {
-    // 必须等渲染完成后再滚动
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
@@ -781,6 +806,7 @@ class _MessageListState extends State<_MessageList> {
                   ),
                   const SizedBox(width: 6),
                   Expanded(
+                    // 使用 SelectableText 使得文本可以复制，由于 JSON 解析，现在这里会按自然排版显示
                     child: SelectableText(
                       m.text,
                       style: const TextStyle(
