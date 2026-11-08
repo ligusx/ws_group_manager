@@ -887,7 +887,7 @@ class _AddDialog extends StatefulWidget {
 
 class _AddDialogState extends State<_AddDialog> {
   final _name = TextEditingController();
-  final _url = TextEditingController(text: 'ws://echo.websocket.events');
+  final _url = TextEditingController();
 
   @override
   void dispose() {
